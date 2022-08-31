@@ -42,6 +42,7 @@ if __name__ == "__main__":
     else:
         dataset_lists = datasets.DATASETS.keys()
 
+    hparams_sampling_mode = args['hparams']
     for model in model_lists:
         for dataset in dataset_lists:
             for data_seed in range(args["num_data_seeds"]):
@@ -60,8 +61,16 @@ if __name__ == "__main__":
                         "output_dir": args["output_dir"],
                         "callback": args["callback"]
                     }
-
-                    all_jobs.append(train_args)
+                    if model == 'MetaDiag':
+                      nquantiles = 10  # Number of quantile.
+                      pi = 0.01
+                      train_args['hparams'] = models.MODELS[args["model"]].get_hparams(hparams_sampling_mode)
+                      for tau in [k * 1 / nquantiles for k in range(1, N + 1)]:
+                        _train_args = copy.deepcopy(train_args)
+                        _train_args['hparams'].update(tau=tau)
+                        all_jobs.append(_train_args)
+                    else:
+                      all_jobs.append(train_args)
 
     random.shuffle(all_jobs)
 

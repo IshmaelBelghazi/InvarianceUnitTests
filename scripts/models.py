@@ -7,46 +7,14 @@ import numpy as np
 import utils
 from torch.autograd import grad
 
-
-class Model(torch.nn.Module):
-    def __init__(self, in_features, out_features, task, hparams="default"):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.task = task
-
-        # network architecture
-        self.network = torch.nn.Linear(in_features, out_features)
-
-        # loss
-        if self.task == "regression":
-            self.loss = torch.nn.MSELoss()
-        else:
-            self.loss = torch.nn.BCEWithLogitsLoss()
-
-        # hyper-parameters
-        if hparams == "default":
-            self.hparams = {k: v[0] for k, v in self.HPARAMS.items()}
-        elif hparams == "random":
-            self.hparams = {k: v[1] for k, v in self.HPARAMS.items()}
-        else:
-            self.hparams = json.loads(hparams)
-
-        # callbacks
-        self.callbacks = {}
-        for key in ["errors"]:
-            self.callbacks[key] = {
-                "train": [],
-                "validation": [],
-                "test": []
-            }
-
+from .basemodel import Model
+from .metadiag import MetaDiagModel
 
 class ERM(Model):
-    def __init__(self, in_features, out_features, task, hparams="default"):
-        self.HPARAMS = {}
-        self.HPARAMS["lr"] = (1e-3, 10**random.uniform(-4, -2))
-        self.HPARAMS['wd'] = (0., 10**random.uniform(-6, -2))
+
+    HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, -2))
+    HPARAMS['wd'] = (0., lambda: 10**random.uniform(-6, -2))
+    def __init__(self, in_features, out_features, task, hparams):
 
         super().__init__(in_features, out_features, task, hparams)
 
@@ -76,92 +44,91 @@ class IRM(Model):
     """
     Abstract class for IRM
     """
+  HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, -2))
+  HPARAMS['wd'] = (0., lambda: 10**random.uniform(-6, -2))
+  HPARAMS['irm_lambda'] = (0.9, lambda: 1 - 10**random.uniform(-3, -.3))
 
-    def __init__(
-            self, in_features, out_features, task, hparams="default", version=1):
-        self.HPARAMS = {}
-        self.HPARAMS["lr"] = (1e-3, 10**random.uniform(-4, -2))
-        self.HPARAMS['wd'] = (0., 10**random.uniform(-6, -2))
-        self.HPARAMS['irm_lambda'] = (0.9, 1 - 10**random.uniform(-3, -.3))
+  def __init__(
+          self, in_features, out_features, task, hparams, version=1):
 
-        super().__init__(in_features, out_features, task, hparams)
-        self.version = version
+      super().__init__(in_features, out_features, task, hparams)
+      self.version = version
 
-        self.network = self.IRMLayer(self.network)
-        self.net_parameters, self.net_dummies = self.find_parameters(
-            self.network)
+      self.network = self.IRMLayer(self.network)
+      self.net_parameters, self.net_dummies = self.find_parameters(
+          self.network)
 
-        self.optimizer = torch.optim.Adam(
-            self.net_parameters,
-            lr=self.hparams["lr"],
-            weight_decay=self.hparams["wd"])
+      self.optimizer = torch.optim.Adam(
+          self.net_parameters,
+          lr=self.hparams["lr"],
+          weight_decay=self.hparams["wd"])
 
-    def find_parameters(self, network):
-        """
-        Alternative to network.parameters() to separate real parameters
-        from dummmies.
-        """
-        parameters = []
-        dummies = []
+  def find_parameters(self, network):
+      """
+      Alternative to network.parameters() to separate real parameters
+      from dummmies.
+      """
+      parameters = []
+      dummies = []
 
-        for name, param in network.named_parameters():
-            if "dummy" in name:
-                dummies.append(param)
-            else:
-                parameters.append(param)
-        return parameters, dummies
+      for name, param in network.named_parameters():
+          if "dummy" in name:
+              dummies.append(param)
+          else:
+              parameters.append(param)
+      return parameters, dummies
 
-    class IRMLayer(torch.nn.Module):
-        """
-        Add a "multiply by one and sum zero" dummy operation to
-        any layer. Then you can take gradients with respect these
-        dummies. Often applied to Linear and Conv2d layers.
-        """
+  class IRMLayer(torch.nn.Module):
+      """
+      Add a "multiply by one and sum zero" dummy operation to
+      any layer. Then you can take gradients with respect these
+      dummies. Often applied to Linear and Conv2d layers.
+      """
 
-        def __init__(self, layer):
-            super().__init__()
-            self.layer = layer
-            self.dummy_mul = torch.nn.Parameter(torch.Tensor([1.0]))
-            self.dummy_sum = torch.nn.Parameter(torch.Tensor([0.0]))
+      def __init__(self, layer):
+          super().__init__()
+          self.layer = layer
+          self.dummy_mul = torch.nn.Parameter(torch.Tensor([1.0]))
+          self.dummy_sum = torch.nn.Parameter(torch.Tensor([0.0]))
 
-        def forward(self, x):
-            return self.layer(x) * self.dummy_mul + self.dummy_sum
+      def forward(self, x):
+          return self.layer(x) * self.dummy_mul + self.dummy_sum
 
-    def fit(self, envs, num_iterations, callback=False):
-        for epoch in range(num_iterations):
-            losses_env = []
-            gradients_env = []
-            for x, y in envs["train"]["envs"]:
-                losses_env.append(self.loss(self.network(x), y))
-                gradients_env.append(grad(
-                    losses_env[-1], self.net_dummies, create_graph=True))
+  def fit(self, envs, num_iterations, callback=False):
+      for epoch in range(num_iterations):
+          losses_env = []
+          gradients_env = []
+          for x, y in envs["train"]["envs"]:
+              losses_env.append(self.loss(self.network(x), y))
+              gradients_env.append(grad(
+                  losses_env[-1], self.net_dummies, create_graph=True))
 
-            # Average loss across envs
-            losses_avg = sum(losses_env) / len(losses_env)
-            gradients_avg = grad(
-                losses_avg, self.net_dummies, create_graph=True)
+          # Average loss across envs
+          losses_avg = sum(losses_env) / len(losses_env)
+          gradients_avg = grad(
+              losses_avg, self.net_dummies, create_graph=True)
 
-            penalty = 0
-            for gradients_this_env in gradients_env:
-                for g_env, g_avg in zip(gradients_this_env, gradients_avg):
-                    if self.version == 1:
-                        penalty += g_env.pow(2).sum()
-                    else:
-                        raise NotImplementedError
+          penalty = 0
+          for gradients_this_env in gradients_env:
+              for g_env, g_avg in zip(gradients_this_env, gradients_avg):
+                  if self.version == 1:
+                      penalty += g_env.pow(2).sum()
+                  else:
+                      raise NotImplementedError
 
-            obj = (1 - self.hparams["irm_lambda"]) * losses_avg
-            obj += self.hparams["irm_lambda"] * penalty
+          obj = (1 - self.hparams["irm_lambda"]) * losses_avg
+          obj += self.hparams["irm_lambda"] * penalty
 
-            self.optimizer.zero_grad()
-            obj.backward()
-            self.optimizer.step()
+          self.optimizer.zero_grad()
+          obj.backward()
+          self.optimizer.step()
 
-            if callback:
-                # compute errors
-                utils.compute_errors(self, envs)
+          if callback:
+              # compute errors
+              utils.compute_errors(self, envs)
 
-    def predict(self, x):
-        return self.network(x)
+  def predict(self, x):
+      return self.network(x)
 
 
 class IRMv1(IRM):
@@ -170,7 +137,7 @@ class IRMv1(IRM):
     From https://arxiv.org/abs/1907.02893v1 
     """
 
-    def __init__(self, in_features, out_features, task, hparams="default"):
+    def __init__(self, in_features, out_features, task, hparams):
         super().__init__(in_features, out_features, task, hparams, version=1)
 
 
@@ -181,59 +148,60 @@ class AndMask(Model):
     From https://arxiv.org/abs/2009.00329
     """
 
-    def __init__(self, in_features, out_features, task, hparams="default"):
-        self.HPARAMS = {}
-        self.HPARAMS["lr"] = (1e-3, 10**random.uniform(-4, 0))
-        self.HPARAMS['wd'] = (0., 10**random.uniform(-5, 0))
-        self.HPARAMS["tau"] = (0.9, random.uniform(0.8, 1))
-        super().__init__(in_features, out_features, task, hparams)
+    HPARAMS = {}
+    HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, 0))
+    HPARAMS['wd'] = (0., lambda: 10**random.uniform(-5, 0))
+    HPARAMS["tau"] = (0.9, lambda: random.uniform(0.8, 1))
 
-    def fit(self, envs, num_iterations, callback=False):
-        for epoch in range(num_iterations):
-            losses = [self.loss(self.network(x), y)
-                      for x, y in envs["train"]["envs"]]
-            self.mask_step(
-                losses, list(self.parameters()),
-                tau=self.hparams["tau"],
-                wd=self.hparams["wd"],
-                lr=self.hparams["lr"]
-            )
+  def __init__(self, in_features, out_features, task, hparams):
+      super().__init__(in_features, out_features, task, hparams)
 
-            if callback:
-                # compute errors
-                utils.compute_errors(self, envs)
+  def fit(self, envs, num_iterations, callback=False):
+      for epoch in range(num_iterations):
+          losses = [self.loss(self.network(x), y)
+                    for x, y in envs["train"]["envs"]]
+          self.mask_step(
+              losses, list(self.parameters()),
+              tau=self.hparams["tau"],
+              wd=self.hparams["wd"],
+              lr=self.hparams["lr"]
+          )
 
-    def predict(self, x):
-        return self.network(x)
+          if callback:
+              # compute errors
+              utils.compute_errors(self, envs)
 
-    def mask_step(self, losses, parameters, tau=0.9, wd=0.1, lr=1e-3):
-        with torch.no_grad():
-            gradients = []
-            for loss in losses:
-                gradients.append(list(torch.autograd.grad(loss, parameters)))
-                gradients[-1][0] = gradients[-1][0] / gradients[-1][0].norm()
+  def predict(self, x):
+      return self.network(x)
 
-            for ge_all, parameter in zip(zip(*gradients), parameters):
-                # environment-wise gradients (num_environments x num_parameters)
-                ge_cat = torch.cat(ge_all)
+  def mask_step(self, losses, parameters, tau=0.9, wd=0.1, lr=1e-3):
+      with torch.no_grad():
+          gradients = []
+          for loss in losses:
+              gradients.append(list(torch.autograd.grad(loss, parameters)))
+              gradients[-1][0] = gradients[-1][0] / gradients[-1][0].norm()
 
-                # treat scalar parameters also as matrices
-                if ge_cat.dim() == 1:
-                    ge_cat = ge_cat.view(len(losses), -1)
+          for ge_all, parameter in zip(zip(*gradients), parameters):
+              # environment-wise gradients (num_environments x num_parameters)
+              ge_cat = torch.cat(ge_all)
 
-                # creates a mask with zeros on weak features
-                mask = (torch.abs(torch.sign(ge_cat).sum(0))
-                        > len(losses) * tau).int()
+              # treat scalar parameters also as matrices
+              if ge_cat.dim() == 1:
+                  ge_cat = ge_cat.view(len(losses), -1)
 
-                # mean gradient (1 x num_parameters)
-                g_mean = ge_cat.mean(0, keepdim=True)
+              # creates a mask with zeros on weak features
+              mask = (torch.abs(torch.sign(ge_cat).sum(0))
+                      > len(losses) * tau).int()
 
-                # apply the mask
-                g_masked = mask * g_mean
+              # mean gradient (1 x num_parameters)
+              g_mean = ge_cat.mean(0, keepdim=True)
 
-                # update
-                parameter.data = parameter.data - lr * g_masked \
-                    - lr * wd * parameter.data
+              # apply the mask
+              g_masked = mask * g_mean
+
+              # update
+              parameter.data = parameter.data - lr * g_masked \
+                  - lr * wd * parameter.data
 
 
 class IGA(Model):
@@ -242,11 +210,11 @@ class IGA(Model):
     From https://arxiv.org/abs/2008.01883v2
     """
 
-    def __init__(self, in_features, out_features, task, hparams="default"):
-        self.HPARAMS = {}
-        self.HPARAMS["lr"] = (1e-3, 10**random.uniform(-4, -2))
-        self.HPARAMS['wd'] = (0., 10**random.uniform(-6, -2))
-        self.HPARAMS['penalty'] = (1000, 10**random.uniform(1, 5))
+    HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, -2))
+    HPARAMS['wd'] = (0., lambda: 10**random.uniform(-6, -2))
+    HPARAMS['penalty'] = (1000, lambda: 10**random.uniform(1, 5))
+
+    def __init__(self, in_features, out_features, task, hparams):
         super().__init__(in_features, out_features, task, hparams)
 
         self.optimizer = torch.optim.Adam(
@@ -289,5 +257,9 @@ MODELS = {
     "IRMv1": IRMv1,
     "ANDMask": AndMask,
     "IGA": IGA,
-    "Oracle": ERM
+    "Oracle": ERM,
+    "MetaDiag": MetaDiagModel
 }
+
+if __name__ == '__main__':
+  pass
