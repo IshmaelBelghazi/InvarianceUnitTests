@@ -4,13 +4,12 @@ import numpy as np
 import torch
 import math
 
-
 class Example1:
     """
     Cause and effect of a target with heteroskedastic noise
     """
 
-    def __init__(self, dim_inv, dim_spu, n_envs):
+    def __init__(self, dim_inv, dim_spu, n_envs, inv_std=0.1):
         self.scramble = torch.eye(dim_inv + dim_spu)
         self.dim_inv = dim_inv
         self.dim_spu = dim_spu
@@ -24,16 +23,18 @@ class Example1:
         if n_envs >= 3:
             self.envs["E2"] = 2
         if n_envs > 3:
+            assert inv_std <= 1, "inv_std must be <= 1"
             for env in range(3, n_envs):
-                var = 10 ** torch.zeros(1).uniform_(-2, 1).item()
+                var = 10 ** torch.zeros(1).uniform_(math.log10(inv_std * 1.1), 1).item()
                 self.envs["E" + str(env)] = var
 
         self.wxy = torch.randn(self.dim_inv, self.dim_inv) / self.dim_inv
         self.wyz = torch.randn(self.dim_inv, self.dim_spu) / self.dim_spu
+        self.inv_std = inv_std
 
     def sample(self, n=1000, env="E0", split="train"):
         sdv = self.envs[env]
-        x = torch.randn(n, self.dim_inv) * sdv
+        x = torch.randn(n, self.dim_inv) * self.inv_std
         y = x @ self.wxy + torch.randn(n, self.dim_inv) * sdv
         z = y @ self.wyz + torch.randn(n, self.dim_spu)
 
@@ -44,6 +45,46 @@ class Example1:
         outputs = y.sum(1, keepdim=True)
 
         return inputs, outputs
+
+# class Example1:
+#     """
+#     Cause and effect of a target with heteroskedastic noise
+#     """
+
+#     def __init__(self, dim_inv, dim_spu, n_envs):
+#         self.scramble = torch.eye(dim_inv + dim_spu)
+#         self.dim_inv = dim_inv
+#         self.dim_spu = dim_spu
+#         self.dim = dim_inv + dim_spu
+
+#         self.task = "regression"
+#         self.envs = {}
+
+#         if n_envs >= 2:
+#             self.envs = {'E0': 0.1, 'E1': 1.5}
+#         if n_envs >= 3:
+#             self.envs["E2"] = 2
+#         if n_envs > 3:
+#             for env in range(3, n_envs):
+#                 var = 10 ** torch.zeros(1).uniform_(-2, 1).item()
+#                 self.envs["E" + str(env)] = var
+
+#         self.wxy = torch.randn(self.dim_inv, self.dim_inv) / self.dim_inv
+#         self.wyz = torch.randn(self.dim_inv, self.dim_spu) / self.dim_spu
+
+#     def sample(self, n=1000, env="E0", split="train"):
+#         sdv = self.envs[env]
+#         x = torch.randn(n, self.dim_inv) * sdv
+#         y = x @ self.wxy + torch.randn(n, self.dim_inv) * sdv
+#         z = y @ self.wyz + torch.randn(n, self.dim_spu)
+
+#         if split == "test":
+#             z = z[torch.randperm(len(z))]
+
+#         inputs = torch.cat((x, z), -1) @ self.scramble
+#         outputs = y.sum(1, keepdim=True)
+
+#         return inputs, outputs
 
 
 class Example2:

@@ -67,6 +67,7 @@ def build_table(dirname, models=None, n_envs=None, num_dim=None, latex=False, st
                 records.append(f.readline().strip())
 
     df = pd.read_json("\n".join(records), lines=True)
+    import ipdb; ipdb.set_trace()
     if models is not None:
         df = df.query(f"model in {models}")
     if n_envs is not None:

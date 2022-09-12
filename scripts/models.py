@@ -7,13 +7,14 @@ import numpy as np
 import utils
 from torch.autograd import grad
 
-from .basemodel import Model
-from .metadiag import MetaDiagModel
+from basemodel import Model
+from metadiag import MetaDiagModel
 
 class ERM(Model):
-
+    HPARAMS = dict()
     HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, -2))
     HPARAMS['wd'] = (0., lambda: 10**random.uniform(-6, -2))
+
     def __init__(self, in_features, out_features, task, hparams):
 
         super().__init__(in_features, out_features, task, hparams)
@@ -41,9 +42,10 @@ class ERM(Model):
 
 
 class IRM(Model):
-    """
-    Abstract class for IRM
-    """
+  """
+  Abstract class for IRM
+  """
+  HPARAMS = dict()
   HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, -2))
   HPARAMS['wd'] = (0., lambda: 10**random.uniform(-6, -2))
   HPARAMS['irm_lambda'] = (0.9, lambda: 1 - 10**random.uniform(-3, -.3))
@@ -142,16 +144,16 @@ class IRMv1(IRM):
 
 
 class AndMask(Model):
-    """
-    AndMask: Masks the grqdients features for which 
-    the gradients signs across envs disagree more than 'tau'
-    From https://arxiv.org/abs/2009.00329
-    """
+  """
+  AndMask: Masks the grqdients features for which
+  the gradients signs across envs disagree more than 'tau'
+  From https://arxiv.org/abs/2009.00329
+  """
 
-    HPARAMS = {}
-    HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, 0))
-    HPARAMS['wd'] = (0., lambda: 10**random.uniform(-5, 0))
-    HPARAMS["tau"] = (0.9, lambda: random.uniform(0.8, 1))
+  HPARAMS = dict()
+  HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, 0))
+  HPARAMS['wd'] = (0., lambda: 10**random.uniform(-5, 0))
+  HPARAMS["tau"] = (0.9, lambda: random.uniform(0.8, 1))
 
   def __init__(self, in_features, out_features, task, hparams):
       super().__init__(in_features, out_features, task, hparams)
@@ -205,51 +207,51 @@ class AndMask(Model):
 
 
 class IGA(Model):
-    """
-    Inter-environmental Gradient Alignment
-    From https://arxiv.org/abs/2008.01883v2
-    """
+  """
+  Inter-environmental Gradient Alignment
+  From https://arxiv.org/abs/2008.01883v2
+  """
+  HPARAMS = dict()
+  HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, -2))
+  HPARAMS['wd'] = (0., lambda: 10**random.uniform(-6, -2))
+  HPARAMS['penalty'] = (1000, lambda: 10**random.uniform(1, 5))
 
-    HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, -2))
-    HPARAMS['wd'] = (0., lambda: 10**random.uniform(-6, -2))
-    HPARAMS['penalty'] = (1000, lambda: 10**random.uniform(1, 5))
+  def __init__(self, in_features, out_features, task, hparams):
+      super().__init__(in_features, out_features, task, hparams)
 
-    def __init__(self, in_features, out_features, task, hparams):
-        super().__init__(in_features, out_features, task, hparams)
+      self.optimizer = torch.optim.Adam(
+          self.parameters(),
+          lr=self.hparams["lr"],
+          weight_decay=self.hparams["wd"])
 
-        self.optimizer = torch.optim.Adam(
-            self.parameters(),
-            lr=self.hparams["lr"],
-            weight_decay=self.hparams["wd"])
+  def fit(self, envs, num_iterations, callback=False):
+      for epoch in range(num_iterations):
+          losses = [self.loss(self.network(x), y)
+                    for x, y in envs["train"]["envs"]]
+          gradients = [
+              grad(loss, self.parameters(), create_graph=True)
+              for loss in losses
+          ]
+          # average loss and gradients
+          avg_loss = sum(losses) / len(losses)
+          avg_gradient = grad(avg_loss, self.parameters(), create_graph=True)
 
-    def fit(self, envs, num_iterations, callback=False):
-        for epoch in range(num_iterations):
-            losses = [self.loss(self.network(x), y)
-                      for x, y in envs["train"]["envs"]]
-            gradients = [
-                grad(loss, self.parameters(), create_graph=True)
-                for loss in losses
-            ]
-            # average loss and gradients
-            avg_loss = sum(losses) / len(losses)
-            avg_gradient = grad(avg_loss, self.parameters(), create_graph=True)
+          # compute trace penalty
+          penalty_value = 0
+          for gradient in gradients:
+              for gradient_i, avg_grad_i in zip(gradient, avg_gradient):
+                  penalty_value += (gradient_i - avg_grad_i).pow(2).sum()
 
-            # compute trace penalty
-            penalty_value = 0
-            for gradient in gradients:
-                for gradient_i, avg_grad_i in zip(gradient, avg_gradient):
-                    penalty_value += (gradient_i - avg_grad_i).pow(2).sum()
+          self.optimizer.zero_grad()
+          (avg_loss + self.hparams['penalty'] * penalty_value).backward()
+          self.optimizer.step()
 
-            self.optimizer.zero_grad()
-            (avg_loss + self.hparams['penalty'] * penalty_value).backward()
-            self.optimizer.step()
+          if callback:
+              # compute errors
+              utils.compute_errors(self, envs)
 
-            if callback:
-                # compute errors
-                utils.compute_errors(self, envs)
-
-    def predict(self, x):
-        return self.network(x)
+  def predict(self, x):
+      return self.network(x)
 
 
 MODELS = {
