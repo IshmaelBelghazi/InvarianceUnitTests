@@ -9,6 +9,7 @@ from torch.autograd import grad
 
 from basemodel import Model
 from metadiag import MetaDiagModel
+from projection_model import ProjectionModel
 
 class ERM(Model):
     HPARAMS = dict()
@@ -260,7 +261,8 @@ MODELS = {
     "ANDMask": AndMask,
     "IGA": IGA,
     "Oracle": ERM,
-    "MetaDiag": MetaDiagModel
+    "MetaDiag": MetaDiagModel,
+    "Projection": ProjectionModel
 }
 
 if __name__ == '__main__':

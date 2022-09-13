@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+
+#!/usr/bin/env python3
 import json
 import random
 import pytest
@@ -52,27 +54,12 @@ class MatrixSquareRoot(Function):
 sqrtm = MatrixSquareRoot.apply
 
 def quotient(X, Y, mode):
-  if mode not in ['product', 'sqrt_product']:
+  if mode not in ['product', 'quadratic']:
     err_msg = f'Unrecognized mode {mode}'
     raise ValueError(err_msg)
 
-  if mode == 'sqrt_product':
+  if mode == 'product':
     return sqrtm(X) @ sqrtm(Y)
-  elif mode == 'product':
-    return X @ Y
-
-def make_edges(covs_crosses, connectivity):
-  connectivities = ['fully_self_connected', 'fully_connected']
-  if connectivity not in connectivities:
-    err_msg = f'Connectivity mode not recognized: {connectivity}'
-
-  if connectivity == 'fully_self_connected':
-    n = len(covs_crosses)
-    return list(set(list(itertools.product(range(n), range(n)))))
-  elif connectivity == 'fully_connected':
-    n = len(covs_crosses)
-    return list(set(filter(lambda el: el[0] != el[1], itertools.product(range(n), range(n)))))
-
 
 def cross_cov(Y, X):
     N = X.shape[0]
@@ -82,14 +69,13 @@ def cross_cov(Y, X):
     X_demeaned = X - mu_X
     return (Y_demeaned.T @ X_demeaned) / (N * (N - 1))
 
-class MetaDiag(nn.Module, LazyModuleMixin):
-  def __init__(self, tau, quotient_mode, connectivity, project, pi=0.1, use_double=False):
+class ProjectionDualDiag(nn.Module, LazyModuleMixin):
+  def __init__(self, tau, quotient_mode, project, pi=0.1, use_double=False):
     super().__init__()
     self.pi = pi
     self.use_double = use_double
     self.tau = tau
     self.quotient_mode = quotient_mode
-    self.connectivity = connectivity
     self.project = project
 
     self.register_buffer('V', UninitializedBuffer())
@@ -134,11 +120,13 @@ class MetaDiag(nn.Module, LazyModuleMixin):
               C + self.pi * torch.eye(C.shape[0], dtype=C.dtype, device=C.device)
               for C in Cs
           ]
+      ncovs = len(covs)
+      covs = Cs[:ncovs]
+      crosses = Cs[ncovs:]
 
-      S = 0.
-      edges = make_edges(Cs, self.connectivity)
-      for (i, j) in edges:
-        S += quotient(Cs[i], Cs[j], mode=self.quotient_mode)
+      CXX = sum(covs) / len(covs)
+      CXYYX = sum(crosses) / len(crosses)
+      S = quotient(CXX, CXYYX, mode=self.quotient_mode)
 
       if self.project:
         S = 0.5 * (S + S.T)
@@ -176,11 +164,10 @@ class MetaDiag(nn.Module, LazyModuleMixin):
 
       if isinstance(self.P, UninitializedBuffer):
         threshold = torch.quantile(self.Lambda, self.tau)
-        # idx = torch.where(self.Lambda <= threshold)[0]
         idx = torch.where(self.Lambda <= threshold)[0]
-        Vmatp = self.V.T[idx, :]
+        Vmatp = V[:, idx]
         if self.project:
-          P = Vmatp.T
+          P = Vmatp
         else:
           P = torch.linalg.pinv(Vmatp).T
 
@@ -190,17 +177,16 @@ class MetaDiag(nn.Module, LazyModuleMixin):
 
       return Lambda, V
 
-class MetaDiagModel(Model):
+class ProjectionModel(Model):
 
 
   HPARAMS = {}
   HPARAMS["lr"] = (1e-3, lambda: 10**random.uniform(-4, -2))
   HPARAMS['wd'] = (0., lambda: 10**random.uniform(-6, -2))
-  HPARAMS['pi'] = (0.1, lambda: 0.)
+  HPARAMS['pi'] = (0., lambda: 0.)
   HPARAMS['use_double'] = (True, lambda: True)
   HPARAMS['tau'] = (0.5, lambda: 0.5)
-  HPARAMS['quotient_mode'] = ('product', lambda: 'transpose')
-  HPARAMS['connectivity'] = ('fully_connected', lambda: True)
+  HPARAMS['quotient_mode'] = ('quadratic', lambda: 'transpose')
   HPARAMS['project'] = (True, lambda: False)
 
   def __init__(self, in_features, out_features, task, hparams):
@@ -211,11 +197,10 @@ class MetaDiagModel(Model):
         lr=self.hparams["lr"],
         weight_decay=self.hparams["wd"])
 
-    self.encoder = MetaDiag(pi=self.hparams['pi'],
+    self.encoder = ProjectionDualDiag(pi=self.hparams['pi'],
                             tau=self.hparams['tau'],
                             use_double=self.hparams['use_double'],
                             quotient_mode=self.hparams['quotient_mode'],
-                            connectivity=self.hparams['connectivity'],
                             project=self.hparams['project'],
                             )
   def predict(self, x):
